@@ -1,0 +1,30 @@
+{
+    "log_path": "C:/logs",
+    "watch_paths": [
+        "C:/Program Files",
+        "C:/Windows"
+    ],
+    "detection_rules": [
+        "Failed login attempt",
+        "Access denied"
+    ],
+    "alert": {
+        "email_alert": true,
+        "toast_notification": true,
+        "email_recipient": "admin@example.com"
+    },
+    "integrity_monitor": {
+        "watch_files": [
+            "C:/Windows/System32/notepad.exe",
+            "C:/Program Files/SomeApp/somefile.exe"
+        ],
+        "check_interval": 60
+    },
+    "system_monitor": {
+        "watch_processes": [
+            "suspicious_program.exe",
+            "malicious_software.exe"
+        ],
+        "monitor_interval": 10
+    }
+}
