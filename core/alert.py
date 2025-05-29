@@ -1,32 +1,46 @@
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from win10toast import ToastNotifier
 
-class AlertSystem:
-    def __init__(self, config):
+class AlertManager:
+    def __init__(self, logger, config):
+        self.logger = logger
         self.config = config
+        self.notifier = ToastNotifier()
 
-    def send_email(self, subject, body):
-        # 이메일 알림 전송
-        sender_email = self.config['email']['sender']
-        receiver_email = self.config['email']['receiver']
-        password = self.config['email']['password']
-
-        message = MIMEMultipart()
-        message['From'] = sender_email
-        message['To'] = receiver_email
-        message['Subject'] = subject
-        message.attach(MIMEText(body, 'plain'))
-
-        with smtplib.SMTP_SSL(self.config['email']['smtp_server'], self.config['email']['smtp_port']) as server:
-            server.login(sender_email, password)
-            server.sendmail(sender_email, receiver_email, message.as_string())
-
-    def send_toast(self, message):
-        # 토스트 알림 전송
-        print(f"Toast: {message}")
+        email_cfg = config.get("email", {})
+        self.email_enabled = email_cfg.get("enabled", False)
+        self.smtp_server = email_cfg.get("smtp_server")
+        self.smtp_port = email_cfg.get("smtp_port")
+        self.sender = email_cfg.get("sender")
+        self.receiver = email_cfg.get("receiver")
+        self.username = email_cfg.get("username")
+        self.password = email_cfg.get("password")
 
     def send_alert(self, message):
-        # 알림 시스템으로 경고 전송
-        self.send_email("Alert", message)
-        self.send_toast(message)
+        # 로컬 알림
+        self.logger.write_log(message, level="CRITICAL", source="alert")
+        self.notifier.show_toast("보안 경고", message, duration=5, threaded=True)
+
+        # 이메일 알림
+        if self.email_enabled:
+            try:
+                self._send_email(message)
+                self.logger.write_log("이메일 알림 발송 성공", level="INFO", source="alert")
+            except Exception as e:
+                self.logger.write_log(f"이메일 알림 실패: {e}", level="ERROR", source="alert")
+
+    def _send_email(self, message):
+        msg = MIMEMultipart()
+        msg['From'] = self.sender
+        msg['To'] = self.receiver
+        msg['Subject'] = "보안 경고 알림"
+
+        body = MIMEText(message, 'plain')
+        msg.attach(body)
+
+        with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+            server.starttls()
+            server.login(self.username, self.password)
+            server.send_message(msg)
