@@ -9,11 +9,11 @@ MAX_FAILED_ATTEMPTS = 3
 FAILED_ATTEMPT_WINDOW = 60  # seconds
 
 class Detector:
-    def __init__(self, logger, alert, db, config):
-        self.logger = logger
-        self.alert = alert
-        self.db = db
+    def __init__(self, config, logger, db, alert):
         self.config = config
+        self.logger = logger
+        self.db = db
+        self.alert = alert
         self.failed_logins = {}  # {user: [timestamp1, timestamp2, ...]}
         self.malicious_hashes = set(config.get("malicious_hashes", []))
 
