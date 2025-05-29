@@ -1,30 +1,35 @@
 {
-    "log_path": "C:/logs",
-    "watch_paths": [
-        "C:/Program Files",
-        "C:/Windows"
-    ],
-    "detection_rules": [
-        "Failed login attempt",
-        "Access denied"
-    ],
-    "alert": {
-        "email_alert": true,
-        "toast_notification": true,
-        "email_recipient": "admin@example.com"
-    },
-    "integrity_monitor": {
-        "watch_files": [
-            "C:/Windows/System32/notepad.exe",
-            "C:/Program Files/SomeApp/somefile.exe"
-        ],
-        "check_interval": 60
-    },
-    "system_monitor": {
-        "watch_processes": [
-            "suspicious_program.exe",
-            "malicious_software.exe"
-        ],
-        "monitor_interval": 10
-    }
+  "log_file_path": "C:/logs/security.log",
+  "output_log_file": "C:/logs/collected_logs.log",
+  "collection_interval": 10,
+
+  "monitor_directories": [
+    "C:/Users/example/문서"
+  ],
+  "integrity_check_interval": 3600,
+
+  "email": {
+    "enabled": false,
+    "smtp_server": "smtp.example.com",
+    "smtp_port": 587,
+    "sender": "alert@example.com",
+    "receiver": "admin@example.com",
+    "username": "alert@example.com",
+    "password": "your_email_password"
+  },
+
+  "login_fail_threshold": 5,
+
+  "malicious_hashes": [
+    "d41d8cd98f00b204e9800998ecf8427e",
+    "44d88612fea8a8f36de82e1278abb02f"
+  ],
+
+ "database": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "1234",
+    "database": "security_monitor"
+}
 }
