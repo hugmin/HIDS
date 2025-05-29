@@ -1,41 +1,92 @@
+import os
 import time
-from utils.hashing import calculate_hash
-from utils.rules import load_detection_rules
-from utils.common import current_time
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from utils.hashing import calculate_sha256
 
 class IntegrityMonitor:
-    def __init__(self, config):
+    def __init__(self, config, logger, db, alert):
         self.config = config
-        self.rules = load_detection_rules(config['config_path'])
+        self.logger = logger
+        self.db = db
+        self.alert = alert
+        self.directories = config.get("monitor_directories", [])
+        self.interval = config.get("integrity_check_interval", 3600)
+        self.observers = []
 
     def start(self):
-        # 파일 무결성 감시 시작
+        self.logger.write_log("Starting integrity monitor...", source="integrity_monitor")
+        self._start_realtime_monitoring()
+        threading.Thread(target=self._start_periodic_check, daemon=True).start()
+
+    def _start_realtime_monitoring(self):
+        for directory in self.directories:
+            if not os.path.exists(directory):
+                self.logger.write_log(f"Directory not found: {directory}", level="WARNING", source="integrity_monitor")
+                continue
+
+            event_handler = FileChangeHandler(self.logger, self.db, self.alert)
+            observer = Observer()
+            observer.schedule(event_handler, directory, recursive=True)
+            observer.start()
+            self.observers.append(observer)
+            self.logger.write_log(f"Watching directory: {directory}", source="integrity_monitor")
+
+    def _start_periodic_check(self):
         while True:
-            self.monitor_files()
-            time.sleep(10)
+            self.logger.write_log("Performing periodic integrity check...", source="integrity_monitor")
+            for directory in self.directories:
+                self._check_directory_integrity(directory)
+            time.sleep(self.interval)
 
-    def monitor_files(self):
-        # 파일의 해시값을 검사하여 무결성 점검
-        for file_path in self.config.get('watched_files', []):
-            file_hash = calculate_hash(file_path)
-            if file_hash != self.get_previous_hash(file_path):
-                self.send_alert(f"File {file_path} has been modified.")
-            self.save_hash(file_path, file_hash)
+    def _check_directory_integrity(self, directory):
+        for root, _, files in os.walk(directory):
+            for file in files:
+                filepath = os.path.join(root, file)
+                if not os.path.isfile(filepath):
+                    continue
+                current_hash = calculate_sha256(filepath)
+                stored_hash = self.db.get_hash_for_file(filepath)
 
-    def get_previous_hash(self, file_path):
-        # 이전 해시값을 가져오는 메서드
-        # 기존 해시값 로딩 (파일 시스템이나 DB에서 관리)
-        return ""
+                if stored_hash and current_hash != stored_hash:
+                    msg = f"File tampering detected: {filepath}"
+                    self.logger.write_log(msg, level="WARNING", source="integrity_monitor")
+                    self.alert.send_alert(msg)
 
-    def save_hash(self, file_path, file_hash):
-        # 파일 해시값을 저장
-        # 해시값 저장 (파일 시스템이나 DB에서 관리)
-        pass
-
-    def send_alert(self, message):
-        # 알림 시스템에 경고 전송
-        print(f"Alert: {message}")
+                # 최신 해시값으로 DB 업데이트
+                self.db.insert_or_update_file_hash(filepath, current_hash)
 
     def stop(self):
-        # 모니터링 종료
-        print("Integrity Monitor stopped.")
+        for observer in self.observers:
+            observer.stop()
+            observer.join()
+        self.logger.write_log("Stopped integrity monitor.", source="integrity_monitor")
+
+
+class FileChangeHandler(FileSystemEventHandler):
+    def __init__(self, logger, db, alert):
+        super().__init__()
+        self.logger = logger
+        self.db = db
+        self.alert = alert
+
+    def on_modified(self, event):
+        self._handle_event(event, "MODIFIED")
+
+    def on_created(self, event):
+        self._handle_event(event, "CREATED")
+
+    def _handle_event(self, event, event_type):
+        if event.is_directory:
+            return
+        filepath = event.src_path
+        hash_value = calculate_sha256(filepath)
+        stored_hash = self.db.get_hash_for_file(filepath)
+
+        if stored_hash and hash_value != stored_hash:
+            msg = f"File {event_type}: Tampering suspected at {filepath}"
+            self.logger.write_log(msg, level="WARNING", source="integrity_monitor")
+            self.alert.send_alert(msg)
+
+        self.db.insert_or_update_file_hash(filepath, hash_value)
