@@ -1,0 +1,20 @@
+FLUSH PRIVILEGES;
+
+CREATE DATABASE IF NOT EXISTS security_monitor;
+USE security_monitor;
+
+DROP TABLE IF EXISTS logs;
+DROP TABLE IF EXISTS file_hashes;
+
+CREATE TABLE IF NOT EXISTS logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    timestamp DATETIME NOT NULL,
+    level VARCHAR(10) NOT NULL,
+    source VARCHAR(100) NOT NULL,
+    message TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_hashes (
+    filepath VARCHAR(255) PRIMARY KEY,
+    hash VARCHAR(128) NOT NULL
+);
