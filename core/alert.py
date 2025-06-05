@@ -1,46 +1,36 @@
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from win10toast import ToastNotifier
+import time
+from threading import Thread
+from winotify import Notification
 
-class AlertManager:
-    def __init__(self, logger, config):
-        self.logger = logger
-        self.config = config
-        self.notifier = ToastNotifier()
+class Alert:
+    def __init__(self):
+        self.last_behavior_alert_time = 0
+        self.last_integrity_alert_time = 0
+        self.alert_interval = 300  # 5분 (300초) 간격으로 알림 제한
 
-        email_cfg = config.get("email", {})
-        self.email_enabled = email_cfg.get("enabled", False)
-        self.smtp_server = email_cfg.get("smtp_server")
-        self.smtp_port = email_cfg.get("smtp_port")
-        self.sender = email_cfg.get("sender")
-        self.receiver = email_cfg.get("receiver")
-        self.username = email_cfg.get("username")
-        self.password = email_cfg.get("password")
+    def _show_toast_async(self, toast):
+        Thread(target=toast.show).start()
 
-    def send_alert(self, message):
-        # 로컬 알림
-        self.logger.write_log(message, level="CRITICAL", source="alert")
-        self.notifier.show_toast("보안 경고", message, duration=5, threaded=True)
+    def behavior_alert(self, eventid, username, description):
+        current_time = time.time()
+        if current_time - self.last_behavior_alert_time > self.alert_interval:
+            toast = Notification(
+                app_id="HIDS",
+                title="Behavior Alert",
+                msg=description,
+                duration="short"
+            )
+            self._show_toast_async(toast)
+            self.last_behavior_alert_time = current_time
 
-        # 이메일 알림
-        if self.email_enabled:
-            try:
-                self._send_email(message)
-                self.logger.write_log("이메일 알림 발송 성공", level="INFO", source="alert")
-            except Exception as e:
-                self.logger.write_log(f"이메일 알림 실패: {e}", level="ERROR", source="alert")
-
-    def _send_email(self, message):
-        msg = MIMEMultipart()
-        msg['From'] = self.sender
-        msg['To'] = self.receiver
-        msg['Subject'] = "보안 경고 알림"
-
-        body = MIMEText(message, 'plain')
-        msg.attach(body)
-
-        with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-            server.starttls()
-            server.login(self.username, self.password)
-            server.send_message(msg)
+    def integrity_alert(self, action, path, description):
+        current_time = time.time()
+        if current_time - self.last_integrity_alert_time > self.alert_interval:
+            toast = Notification(
+                app_id="HIDS",
+                title="Integrity Alert",
+                msg=description,
+                duration="short"
+            )
+            self._show_toast_async(toast)
+            self.last_integrity_alert_time = current_time
