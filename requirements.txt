@@ -1,9 +1,6 @@
-psutil         # 시스템 모니터링 및 프로세스 정보 수집
-pywin32        # Windows 시스템 로그, 이벤트 모니터링
-PyQt5          # GUI 구현을 위한 PyQt5
+PyQt5          # GUI 구현
+watchdog       # 파일 변경 실시간 감시
+psutil         # 시스템 모니터링 (CPU, 메모리 점유율 같은 거)
+winotify       # Windows Toast 알림
 matplotlib     # 그래프 및 데이터 시각화
 pandas         # 데이터 처리 및 분석
-pymysql        # MySQL DB 연결
-smtplib        # 이메일 전송을 위한 라이브러리 (Python 표준 라이브러리로 별도의 설치가 없어도 됨)
-watchdog       # 파일 변경 실시간 감시
-wmi            # Windows Management Instrumentation (이상행위 탐지용)
