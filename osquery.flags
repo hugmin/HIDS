@@ -1,0 +1,7 @@
+--config_path=C:\ProgramData\osquery\osquery.conf
+--logger_path=C:\ProgramData\osquery\log
+--logger_plugin=filesystem
+--disable_logging=false
+--disable_events=false
+--enable_monitor=true
+--verbose
