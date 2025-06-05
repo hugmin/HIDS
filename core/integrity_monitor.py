@@ -1,92 +1,136 @@
 import os
-import time
+import hashlib
+import json
 import threading
+from datetime import datetime
+from typing import List, Dict, Any
+
+from PyQt5.QtCore import QTimer
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from utils.hashing import calculate_sha256
 
-class IntegrityMonitor:
-    def __init__(self, config, logger, db, alert):
-        self.config = config
-        self.logger = logger
+from core.alert import Alert
+from core.database import Database
+
+
+class IntegrityMonitor(FileSystemEventHandler):
+    def __init__(self, db: Database, alert: Alert):
         self.db = db
         self.alert = alert
-        self.directories = config.get("monitor_directories", [])
-        self.interval = config.get("integrity_check_interval", 3600)
-        self.observers = []
+        self.monitor_path = f"C:/Users/{os.getlogin()}/OneDrive/문서"
+        self.event_queue: List[Dict[str, Any]] = []
+        self.lock = threading.Lock()
 
-    def start(self):
-        self.logger.write_log("Starting integrity monitor...", source="integrity_monitor")
-        self._start_realtime_monitoring()
-        threading.Thread(target=self._start_periodic_check, daemon=True).start()
+        # 이벤트 병합 및 처리 타이머
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.process_buffered_events)
+        self.timer.start(5000)  # 5초마다 병합 및 처리
 
-    def _start_realtime_monitoring(self):
-        for directory in self.directories:
-            if not os.path.exists(directory):
-                self.logger.write_log(f"Directory not found: {directory}", level="WARNING", source="integrity_monitor")
-                continue
+        # watchdog 설정
+        self.observer = Observer()
+        self.observer.schedule(self, self.monitor_path, recursive=True)
 
-            event_handler = FileChangeHandler(self.logger, self.db, self.alert)
-            observer = Observer()
-            observer.schedule(event_handler, directory, recursive=True)
-            observer.start()
-            self.observers.append(observer)
-            self.logger.write_log(f"Watching directory: {directory}", source="integrity_monitor")
-
-    def _start_periodic_check(self):
-        while True:
-            self.logger.write_log("Performing periodic integrity check...", source="integrity_monitor")
-            for directory in self.directories:
-                self._check_directory_integrity(directory)
-            time.sleep(self.interval)
-
-    def _check_directory_integrity(self, directory):
-        for root, _, files in os.walk(directory):
-            for file in files:
-                filepath = os.path.join(root, file)
-                if not os.path.isfile(filepath):
-                    continue
-                current_hash = calculate_sha256(filepath)
-                stored_hash = self.db.get_hash_for_file(filepath)
-
-                if stored_hash and current_hash != stored_hash:
-                    msg = f"File tampering detected: {filepath}"
-                    self.logger.write_log(msg, level="WARNING", source="integrity_monitor")
-                    self.alert.send_alert(msg)
-
-                # 최신 해시값으로 DB 업데이트
-                self.db.insert_or_update_file_hash(filepath, current_hash)
+    def run(self):
+        """모니터 시작"""
+        print(f"[IntegrityMonitor] Starting to monitor: {self.monitor_path}")
+        self.observer.start()
 
     def stop(self):
-        for observer in self.observers:
-            observer.stop()
-            observer.join()
-        self.logger.write_log("Stopped integrity monitor.", source="integrity_monitor")
-
-
-class FileChangeHandler(FileSystemEventHandler):
-    def __init__(self, logger, db, alert):
-        super().__init__()
-        self.logger = logger
-        self.db = db
-        self.alert = alert
-
-    def on_modified(self, event):
-        self._handle_event(event, "MODIFIED")
+        """모니터 종료"""
+        self.observer.stop()
+        self.observer.join()
 
     def on_created(self, event):
-        self._handle_event(event, "CREATED")
+        if not event.is_directory:
+            self.queue_event("added", event.src_path)
 
-    def _handle_event(self, event, event_type):
-        if event.is_directory:
-            return
-        filepath = event.src_path
-        hash_value = calculate_sha256(filepath)
-        stored_hash = self.db.get_hash_for_file(filepath)
+    def on_deleted(self, event):
+        if not event.is_directory:
+            self.queue_event("removed", event.src_path)
 
-        if stored_hash and hash_value != stored_hash:
-            msg = f"File {event_type}: Tampering suspected at {filepath}"
-            self.logger.write_log(msg, level="WARNING", source="integrity_monitor")
-            self.alert.send_alert(msg)
+    def on_modified(self, event):
+        if not event.is_directory:
+            self.queue_event("modified", event.src_path)
 
-        self.db.insert_or_update_file_hash(filepath, hash_value)
+    def queue_event(self, action: str, path: str):
+        with self.lock:
+            self.event_queue.append({
+                "timestamp": datetime.now(),
+                "action": action,
+                "path": path,
+                "md5": self.calculate_md5(path) if action != "removed" else ""
+            })
+
+    def process_buffered_events(self):
+        with self.lock:
+            if not self.event_queue:
+                return
+
+            events = self.event_queue.copy()
+            self.event_queue.clear()
+
+        merged = self.merge_modified_events(events)
+
+        for event in merged:
+            self.save_event_and_alert(event)
+
+    def merge_modified_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """CREATED+DELETED 조합을 MODIFIED로 간주하는 로직"""
+        events.sort(key=lambda x: (x["path"], x["timestamp"]))
+        result = []
+        i = 0
+
+        while i < len(events):
+            cur = events[i]
+
+            if i + 1 < len(events):
+                nxt = events[i + 1]
+                if (
+                    cur["path"] == nxt["path"]
+                    and cur["action"] == "removed"
+                    and nxt["action"] == "added"
+                    and cur["md5"] != nxt["md5"]
+                ):
+                    result.append({
+                        "timestamp": nxt["timestamp"],
+                        "action": "MODIFIED",
+                        "path": nxt["path"]
+                    })
+                    i += 2
+                    continue
+
+            action_map = {"added": "CREATED", "removed": "DELETED"}
+            mapped_action = action_map.get(cur["action"], cur["action"].upper())
+            result.append({
+                "timestamp": cur["timestamp"],
+                "action": mapped_action,
+                "path": cur["path"]
+            })
+            i += 1
+
+        return sorted(result, key=lambda x: x["timestamp"])
+
+    def save_event_and_alert(self, event: Dict[str, Any]) -> None:
+        try:
+            action = event["action"]
+            path = event["path"]
+            timestamp = event["timestamp"].strftime('%Y-%m-%d %H:%M:%S')
+            username = "SYSTEM@NT AUTHORITY"
+
+            # 알림 전송
+            self.alert.integrity_alert(action, path, f"File {path} was {action.lower()}.")
+
+            # DB 저장
+            alert_type = "Integrity Check"
+            description = f"File {path} was {action.lower()} by {username}"
+            self.db.insert_event(alert_type, "Integrity Event", action, username, description, timestamp)
+
+        except Exception as e:
+            print(f"[IntegrityMonitor] Error saving alert: {e}")
+
+    def calculate_md5(self, filepath: str) -> str:
+        try:
+            with open(filepath, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()
+        except Exception:
+            return ""
