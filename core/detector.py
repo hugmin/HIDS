@@ -1,63 +1,84 @@
-import wmi
 import os
-import time
-from utils.hashing import calculate_sha256
-from utils.rules import load_malicious_hashes
+import json
+from datetime import datetime
+from typing import Dict, Any
 
-FAILED_LOGON_EVENT_ID = "4625"
-MAX_FAILED_ATTEMPTS = 3
-FAILED_ATTEMPT_WINDOW = 60  # seconds
+from core.alert import Alert
+from core.database import Database
+
 
 class Detector:
-    def __init__(self, config, logger, db, alert):
-        self.config = config
-        self.logger = logger
+    def __init__(self, db: Database, alert: Alert):
         self.db = db
         self.alert = alert
-        self.failed_logins = {}  # {user: [timestamp1, timestamp2, ...]}
-        self.malicious_hashes = set(config.get("malicious_hashes", []))
+        self.log_directory = "C:/ProgramData/osquery/log"
+        self.event_log_files = []
 
-        self.wmi_conn = wmi.WMI()
+    def load_log_files(self) -> None:
+        """로그 디렉토리에서 .log 파일 목록 수집"""
+        for root, _, files in os.walk(self.log_directory):
+            for file in files:
+                if file.endswith(".log"):
+                    self.event_log_files.append(os.path.join(root, file))
 
-    def start(self):
-        self.logger.write_log("Starting detector module...", source="detector")
-        while True:
-            self.detect_failed_logins()
-            self.detect_malware_execution()
-            time.sleep(5)
-
-    def detect_failed_logins(self):
+    def parse_event(self, log_entry: Dict[str, Any]) -> None:
+        """단일 이벤트 파싱 및 DB 기록 + 알림 전송"""
         try:
-            query = f"SELECT * FROM Win32_NTLogEvent WHERE Logfile='Security' AND EventCode={FAILED_LOGON_EVENT_ID}"
-            for event in self.wmi_conn.query(query):
-                user = event.InsertionStrings[5] if len(event.InsertionStrings) > 5 else "Unknown"
-                self.track_failed_attempt(user)
+            eventid = str(log_entry.get("columns", {}).get("eventid", "unknown"))
+            action = log_entry.get("action", "unknown")
+            username = log_entry.get("decorations", {}).get("username", "unknown")
+            data_fields = log_entry.get("columns", {}).get("data", {})
+            details = json.dumps(data_fields)
+
+            alert_type = "Other"
+            description = "Other event detected."
+
+            if eventid == "4624":
+                alert_type = "Behavior Detection"
+                description = f"Successful login by {username}."
+                # self.alert.behavior_alert(eventid, username, description) 알림 생략
+
+            elif eventid == "4625":
+                alert_type = "Behavior Detection"
+                description = f"Failed login attempt by {username}."
+                self.alert.behavior_alert(eventid, username, description)
+
+            elif eventid == "4672":
+                alert_type = "Behavior Detection"
+                description = f"User {username} granted special privileges."
+                self.alert.behavior_alert(eventid, username, description)
+
+            elif eventid == "4688":
+                alert_type = "Behavior Detection"
+                process_name = data_fields.get("ProcessName", "Unknown")
+                description = f"New process started: {process_name} by {username}."
+                self.alert.behavior_alert(eventid, username, description)
+
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.db.insert_event(alert_type, eventid, action, username, description, timestamp)
+
         except Exception as e:
-            self.logger.write_log(f"Failed to query login events: {e}", level="ERROR", source="detector")
+            print(f"[Detector] Error parsing log entry: {e}")
 
-    def track_failed_attempt(self, user):
-        now = time.time()
-        if user not in self.failed_logins:
-            self.failed_logins[user] = []
-        self.failed_logins[user] = [t for t in self.failed_logins[user] if now - t < FAILED_ATTEMPT_WINDOW]
-        self.failed_logins[user].append(now)
+    def process_logs(self) -> None:
+        """모든 로그 파일 순회 및 이벤트 파싱"""
+        for log_file in self.event_log_files:
+            try:
+                with open(log_file, 'r', encoding='utf-8') as file:
+                    for line in file:
+                        try:
+                            log_entry = json.loads(line.strip())
+                            self.parse_event(log_entry)
+                        except json.JSONDecodeError:
+                            print(f"[Detector] JSON decode error in file: {log_file}")
+                        except Exception as e:
+                            print(f"[Detector] Error in {log_file}: {e}")
+            except FileNotFoundError:
+                print(f"[Detector] File not found: {log_file}")
+            except Exception as e:
+                print(f"[Detector] Cannot open file {log_file}: {e}")
 
-        if len(self.failed_logins[user]) >= MAX_FAILED_ATTEMPTS:
-            msg = f"Brute-force login suspected for user '{user}'"
-            self.logger.write_log(msg, level="WARNING", source="detector")
-            self.alert.send_alert(msg)
-            self.failed_logins[user] = []  # reset after alert
-
-    def detect_malware_execution(self):
-        try:
-            for process in self.wmi_conn.Win32_Process():
-                path = process.ExecutablePath
-                if not path or not os.path.isfile(path):
-                    continue
-                hash_val = calculate_sha256(path)
-                if hash_val in self.malicious_hashes:
-                    msg = f"Malware execution detected: {path}"
-                    self.logger.write_log(msg, level="CRITICAL", source="detector")
-                    self.alert.send_alert(msg)
-        except Exception as e:
-            self.logger.write_log(f"Failed malware detection: {e}", level="ERROR", source="detector")
+    def run(self) -> None:
+        """탐지기 실행: 로그 로드 및 분석"""
+        self.load_log_files()
+        self.process_logs()
