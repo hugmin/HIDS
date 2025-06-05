@@ -1,99 +1,56 @@
-import pymysql
-import traceback
+import sqlite3
+from datetime import datetime
+from typing import Optional, List, Tuple
 
-class DatabaseManager:
-    def __init__(self, db_config):
-        self.config = db_config
-        self.conn = None
-        self.connect()
 
-    def connect(self):
-        try:
-            print("[DatabaseManager] DB 연결 시도 중...")
-            safe_config = self.config.copy()
-            safe_config['password'] = '****'
-            print(f"[DatabaseManager] 접속 정보: {safe_config}")
+class Database:
+    def __init__(self, db_name: str = 'events.db'):
+        self.db_name = db_name
+        self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
+        self.cursor = self.conn.cursor()
+        self.create_table()
 
-            print("[DatabaseManager] pymysql.connect 호출 전")
+    def create_table(self) -> None:
+        query = '''
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            eventid TEXT NOT NULL,
+            action TEXT NOT NULL,
+            username TEXT NOT NULL,
+            details TEXT
+        );
+        '''
+        self.cursor.execute(query)
+        self.conn.commit()
 
-            self.conn = pymysql.connect(
-                host=self.config['host'],
-                port=int(self.config['port']),
-                user=self.config['user'],
-                password=self.config['password'],
-                database=self.config['database'],
-                connect_timeout=10,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+    def insert_event(
+        self,
+        alert_type: str,
+        eventid: str,
+        action: str,
+        username: str,
+        details: str,
+        timestamp: Optional[str] = None
+    ) -> None:
+        if not timestamp:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            print("[DatabaseManager] DB 연결 성공")
-        except Exception:
-            print("[DatabaseManager] ❌ DB 연결 실패:")
-            traceback.print_exc()
-            raise
-        finally:
-            print("[DatabaseManager] connect() 메서드 종료")
+        query = '''
+        INSERT INTO events (timestamp, alert_type, eventid, action, username, details)
+        VALUES (?, ?, ?, ?, ?, ?);
+        '''
+        self.cursor.execute(query, (timestamp, alert_type, eventid, action, username, details))
+        self.conn.commit()
 
-    def ensure_connection(self):
-        try:
-            if not self.conn or not self.conn.open:
-                print("[DatabaseManager] 연결이 없거나 끊어져서 재연결 시도 중...")
-                self.connect()
-            else:
-                print("[DatabaseManager] 기존 DB 연결 유지 중")
-        except Exception:
-            print("[DatabaseManager] ❌ 연결 확인 중 오류:")
-            traceback.print_exc()
-            self.connect()
+    def get_events(self, limit: int = 100) -> List[Tuple]:
+        """가장 최근 이벤트 조회"""
+        query = '''
+        SELECT * FROM events ORDER BY timestamp DESC LIMIT ?;
+        '''
+        self.cursor.execute(query, (limit,))
+        return self.cursor.fetchall()
 
-    def insert_log(self, log_data):
-        self.ensure_connection()
-        try:
-            with self.conn.cursor() as cursor:
-                sql = """
-                    INSERT INTO logs (timestamp, level, source, message)
-                    VALUES (%s, %s, %s, %s)
-                """
-                val = (
-                    log_data["timestamp"],
-                    log_data["level"],
-                    log_data["source"],
-                    log_data["message"]
-                )
-                cursor.execute(sql, val)
-            self.conn.commit()
-            print("[DatabaseManager] 로그 삽입 성공")
-        except Exception:
-            print("[DatabaseManager] ❌ 로그 삽입 실패:")
-            traceback.print_exc()
-
-    def get_hash_for_file(self, filepath):
-        self.ensure_connection()
-        try:
-            with self.conn.cursor() as cursor:
-                sql = "SELECT hash FROM file_hashes WHERE filepath = %s"
-                cursor.execute(sql, (filepath,))
-                result = cursor.fetchone()
-                print(f"[DatabaseManager] 해시 조회 결과: {result}")
-                return result['hash'] if result else None
-        except Exception:
-            print("[DatabaseManager] ❌ 해시 조회 실패:")
-            traceback.print_exc()
-            return None
-
-    def insert_or_update_file_hash(self, filepath, hash_value):
-        self.ensure_connection()
-        try:
-            with self.conn.cursor() as cursor:
-                sql = """
-                    INSERT INTO file_hashes (filepath, hash)
-                    VALUES (%s, %s)
-                    ON DUPLICATE KEY UPDATE hash = VALUES(hash)
-                """
-                cursor.execute(sql, (filepath, hash_value))
-            self.conn.commit()
-            print("[DatabaseManager] 해시 삽입/업데이트 성공")
-        except Exception:
-            print("[DatabaseManager] ❌ 해시 삽입/업데이트 실패:")
-            traceback.print_exc()
+    def close(self) -> None:
+        self.conn.close()
